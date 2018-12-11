@@ -2,6 +2,7 @@
 
 #include "../backends/wavewriter.h"
 #include "../backends/aowriter.h"
+#include "../backends/sdlwriter.h"
 
 #include "../flashlib/ByteArray.h"
 
@@ -178,6 +179,7 @@ static const hardware_ctor_func hardware_ctors[] = {
 enum BackendType {
 	BE_WAVE,
 	BE_AO,
+	BE_SDL,
 	BE_MAX,
 };
 
@@ -202,6 +204,12 @@ static const struct BackendInfo {
 		.init_func  = (backend_init_func)  AoWriter_init,
 		.write_func = (backend_write_func) AoWriter_write,
 		.close_func = (backend_close_func) AoWriter_close,
+	},
+	[BE_SDL] = {
+		.name = "SdlWriter",
+		.init_func  = (backend_init_func)  SdlWriter_init,
+		.write_func = (backend_write_func) SdlWriter_write,
+		.close_func = (backend_close_func) SdlWriter_close,
 	},
 };
 
@@ -234,32 +242,36 @@ static union {
 int main(int argc, char** argv) {
 	int startarg;
 	enum BackendType backend_type = BE_AO;
-	
+
 	for(startarg = 1; startarg < argc; startarg++) {
 		if(argv[startarg][0] == '-' && argv[startarg][1] == 'w')
 			backend_type = BE_WAVE;
+		else if(argv[startarg][0] == '-' && argv[startarg][1] == 's')
+			backend_type = BE_SDL;
 		else
 			break;
 	}
 	if(startarg == argc) {
-		printf("usage: %s [-w] filename.mod\n"
-		       "where -w means write output to foo.wav instead of audio device\n", argv[0]);
+		printf("usage: %s [-w/s] filename.mod\n"
+		       "-w means write output to foo.wav instead of audio device\n",
+		       "-s means use sdl audio backend\n",
+		       argv[0]);
 		return 1;
 	}
-	
+
 	printf("opening %s\n", argv[startarg]);
-	
+
 	struct ByteArray stream;
 	ByteArray_ctor(&stream);
-	
+
 	if(!ByteArray_open_file(&stream, argv[startarg])) {
 		perror("couldnt open file");
 		return 1;
 	}
-	
+
 	unsigned i;
 	enum HardwareType current_hw = HT_MAX;
-	
+
 	for(i = 0; i < P_MAX; i++) {
 		if(current_hw != player_hardware[i]) {
 			current_hw = player_hardware[i];
@@ -274,7 +286,7 @@ int main(int argc, char** argv) {
 			}
 		}
 	}
-	
+
 	printf("couldn't find a player for %s\n", argv[startarg]);
 	report(KC_FAIL, argv[startarg]);
 	return 1;
@@ -283,6 +295,7 @@ int main(int argc, char** argv) {
 		struct Backend backend;
 		struct WaveWriter ww;
 		struct AoWriter ao;
+		struct SdlWriter sdl;
 	} writer;
 
 play:
@@ -290,33 +303,33 @@ play:
 		perror(backend_info[backend_type].name);
 		return 1;
 	}
-	
+
 	unsigned char wave_buffer[COREMIXER_MAX_BUFFER * 2 * sizeof(float)]; 
 	// FIXME SOUNDCHANNEL_BUFFER_MAX is currently needed, because the CoreMixer descendants will 
 	// misbehave if the stream buffer size is not COREMIXER_MAX_BUFFER * 2 * sizeof(float)
 	struct ByteArray wave;
 	ByteArray_ctor(&wave);
 	wave.endian = BAE_LITTLE;
-	
+
 	ByteArray_open_mem(&wave, wave_buffer, sizeof(wave_buffer));
-	
+
 	hardware.core.wave = &wave;
-	
+
 	init_keyboard();
 	tune = argv[startarg];
 	signal(SIGTRAP, trap_handler);
-	
+
 play_song:
 	player.core.initialize(&player.core);
-	
+
 #define MAX_PLAYTIME (60 * 5)
 	const unsigned bytespersec = 44100 * 2 * (16 / 8);
 	const unsigned max_bytes = bytespersec * MAX_PLAYTIME;
 	unsigned bytes_played = 0;
 	int paused = 0, skip = 0;
-	
+
 	printf("playing subsong [%d/%d]\n", player.core.playSong + 1, player.core.lastSong + 1);
-	
+
 	while(!CoreMixer_get_complete(&hardware.core)) {
 		hardware.core.accurate(&hardware.core);
 		if(wave.pos) {
@@ -338,7 +351,7 @@ play_song:
 ck:
 		switch((kc = check_keyboard())) {
 			case KC_QUIT: goto doneloop;
-			case KC_PAUSE: 
+			case KC_PAUSE:
 				paused = !paused;
 				break;
 			case KC_SKIP:
@@ -354,18 +367,17 @@ ck:
 			sleep(1);
 			goto ck;
 		}
-		
 	}
 doneloop:
-	
+
 	if(++player.core.playSong <= player.core.lastSong) {
 		goto play_song;
 	}
-	
+
 	backend_info[backend_type].close_func(&writer.backend);
-	
+
 	close_keyboard();
-	
+
 	return 0;
 }
 
